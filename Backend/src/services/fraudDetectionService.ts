@@ -30,6 +30,9 @@ export class FraudDetectionService {
         // --- Call Python ML Service ---
         try {
             // Note: In production use value from env, defaulting for demo
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+            
             const mlResponse = await fetch('http://127.0.0.1:8000/verify-receiver', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -37,22 +40,28 @@ export class FraudDetectionService {
                     sender_vpa: sender_upi_id,
                     receiver_vpa: receiver_upi_id,
                     amount: amount
-                })
+                }),
+                signal: controller.signal
             });
+
+            clearTimeout(timeout);
 
             if (mlResponse.ok) {
                 const mlResult = await mlResponse.json();
-                // Merge ML Score
-                if (mlResult.risk_score > 0) {
-                    score = mlResult.risk_score;
+                // Merge ML Score (even if 0, to show ML is working)
+                score = Math.max(score, mlResult.risk_score || 0);
+                if (mlResult.breakdown && mlResult.breakdown.length > 0) {
                     reasons.push(...mlResult.breakdown);
+                } else if (mlResult.risk_score === 0 || mlResult.risk_score < 20) {
+                    reasons.push('ML Analysis: Transaction appears normal');
                 }
             } else {
                 console.error('ML Service Error:', mlResponse.statusText);
+                reasons.push('ML Service returned error - Using fallback analysis');
             }
         } catch (e) {
             console.error('Failed to connect to ML Service:', e);
-            reasons.push('ML Service Unavailable (Fallback to basic rules)');
+            reasons.push('ML Service Unavailable - Using basic rules');
         }
 
         // --- Velocity Check (Bot Blast Detection) ---

@@ -115,36 +115,57 @@ async def verify_receiver(tx: TransactionRequest):
                 
         except Exception as e:
             print(f"Inference Error: {e}")
-            breakdown.append("ML: Inference failed")
+            breakdown.append("ML: Inference failed - Using rule-based detection")
 
     # --- Tier 4: Gemini LLM Fallback (Smart Semantic Check) ---
-    # Only check if not already CONFIRMED malicious (to save API calls/latency)
-    # But check if there's any doubt or if user explicitly wants deep scanning
+    # Use Gemini ONLY if:
+    # 1. ML model failed
+    # 2. Risk score indicates SUSPICIOUS or MALICIOUS (needs AI verification)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    if risk_score < 80 and GEMINI_API_KEY:
+    use_gemini = (model is None and len(breakdown) == 0) or (risk_score >= 40)
+    
+    if GEMINI_API_KEY and use_gemini:
         try:
             import google.generativeai as genai
             genai.configure(api_key=GEMINI_API_KEY)
-            llm_model = genai.GenerativeModel('gemini-pro')
+            llm_model = genai.GenerativeModel('gemini-1.5-flash')  # Faster model
             
-            prompt = f"""
-            Analyze this UPI ID for fraud risk: '{tx.receiver_vpa}'.
-            Is it trying to impersonate a brand, promise money, or look like an official authority?
-            Return ONLY a JSON: {{"risk_score": 0-100, "reason": "short explanation"}}
-            """
+            prompt = f"""You are a fraud detection expert. Analyze this UPI ID for fraud risk in 1-2 sentences.
             
-            response = llm_model.generate_content(prompt)
-            # Basic parsing (LLM might return code blocks)
-            clean_text = response.text.replace('```json', '').replace('```', '').strip()
+UPI ID: {tx.receiver_vpa}
+
+Return ONLY JSON: {{"risk_score": <0-100>, "reason": "<one line>"}}"""
+            
+            # Set timeout
+            response = llm_model.generate_content(prompt, request_options={"timeout": 5})
+            clean_text = response.text.replace('```json', '').replace('```', '').replace('json', '').strip()
             import json
-            llm_result = json.loads(clean_text)
             
-            if llm_result.get('risk_score', 0) > 40:
-                risk_score = max(risk_score, llm_result['risk_score']) # Take the higher risk
-                breakdown.append(f"AI: {llm_result.get('reason')}")
+            try:
+                llm_result = json.loads(clean_text)
+                gemini_score = llm_result.get('risk_score', 0)
+                gemini_reason = llm_result.get('reason', 'Analyzed by AI')
+                
+                if model is None:
+                    risk_score = gemini_score
+                    breakdown.append(f"GEMINI AI: {gemini_reason}")
+                elif gemini_score > risk_score:
+                    risk_score = gemini_score
+                    breakdown.append(f"GEMINI AI VERIFICATION: {gemini_reason}")
+                
+            except:
+                pass
                 
         except Exception as e:
             print(f"Gemini Error: {e}")
+    
+    # Ensure we always have at least one reason
+    if len(breakdown) == 0:
+        if risk_score > 0:
+            breakdown.append(f"Rule-based detection: Risk pattern detected")
+        else:
+            breakdown.append("Analysis complete: No fraud indicators detected")
+
 
     # Final Verdict Logic
     final_score = min(risk_score, 100)
@@ -161,4 +182,5 @@ async def verify_receiver(tx: TransactionRequest):
 
 if __name__ == "__main__":
     import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 

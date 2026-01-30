@@ -37,7 +37,8 @@ export const checkRisk = async (req: Request, res: Response) => {
         res.json(riskResult);
 
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error('Fraud Check Error:', err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: 'Internal Server Error', details: errorMsg });
     }
 };
